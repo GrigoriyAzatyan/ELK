@@ -2,23 +2,30 @@
 - name: Install Java
   hosts: all
   tasks:
+    - name: Print all available facts
+      ansible.builtin.debug:
+        var: ansible_facts
+
     - name: Set facts for Java 11 vars
       set_fact:
         java_home: "/opt/jdk/{{ java_jdk_version }}"
       tags: java
-    - name: Upload .tar.gz file containing binaries from local storage
-      copy:
-        src: "{{ java_oracle_jdk_package }}"
+
+    - name: Download .tar.gz file containing binaries
+      get_url:
+        url: " {{ java_distr_url }} "
         dest: "/tmp/jdk-{{ java_jdk_version }}.tar.gz"
       register: download_java_binaries
       until: download_java_binaries is succeeded
       tags: java
+
     - name: Ensure installation dir exists
       become: true
       file:
         state: directory
         path: "{{ java_home }}"
       tags: java
+
     - name: Extract java in the installation directory
       become: true
       unarchive:
@@ -29,19 +36,21 @@
         creates: "{{ java_home }}/bin/java"
       tags:
         - java
+
     - name: Export environment variables
       become: true
       template:
         src: jdk.sh.j2
         dest: /etc/profile.d/jdk.sh
       tags: java
+
 - name: Install Elasticsearch
   hosts: elasticsearch
   tasks:
     - name: Upload tar.gz Elasticsearch from remote URL
       get_url:
-        url: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-{{ elastic_version }}-linux-x86_64.tar.gz"
-        dest: "/tmp/elasticsearch-{{ elastic_version }}-linux-x86_64.tar.gz"
+        url: "https://artifacts.elastic.co/downloads/elasticsearch/elasticsearch-{{ elk_stack_version }}-linux-x86_64.tar.gz"
+        dest: "/tmp/elasticsearch-{{ elk_stack_version }}-linux-x86_64.tar.gz"
         mode: 0755
         timeout: 60
         force: true
@@ -54,11 +63,17 @@
         state: directory
         path: "{{ elastic_home }}"
       tags: elastic
+    - name: Create directrory etc/elasticsearch
+      file:
+        state: directory
+        path: etc/elasticsearch
+      tags: elastic
+
     - name: Extract Elasticsearch in the installation directory
       become: true
       unarchive:
         copy: false
-        src: "/tmp/elasticsearch-{{ elastic_version }}-linux-x86_64.tar.gz"
+        src: "/tmp/elasticsearch-{{ elk_stack_version }}-linux-x86_64.tar.gz"
         dest: "{{ elastic_home }}"
         extra_opts: [--strip-components=1]
         creates: "{{ elastic_home }}/bin/elasticsearch"
@@ -71,49 +86,99 @@
         dest: /etc/profile.d/elk.sh
       tags: elastic
 
+    - name: add user for Elasticsearch
+      user:
+        name: elastic
+        shell: /bin/bash
+
+    - name: chown work directory
+      file:
+        owner: elastic
+        group: elastic
+        path: /opt/elastic 
+        recurse: true 
+
+    - name: chown log directory
+      file:
+        owner: elastic
+        group: elastic
+        path: /var/log/elasticsearch
+        recurse: true
+
+    - name: chown lib directory
+      file:
+        owner: elastic
+        group: elastic
+        path: /var/lib/elasticsearch
+        recurse: true
+
+    - name: Configure Elasticsearch
+      become: true
+      template:
+        src: elasticsearch.yml.j2
+        mode: 0644
+        dest: /opt/elastic/{{ elk_stack_version }}/config/elasticsearch.yml
+
+    - name: Start Elasticsearch
+      shell: "(/opt/elastic/{{ elk_stack_version }}/bin/elasticsearch >/dev/null 2>&1 &)" 
+      async: 10
+      poll: 0
+      changed_when: false
+      become: true
+      become_user: elastic
    
   ### KIBANA    
 - name: Install Kibana
   hosts: elasticsearch
-  tasks:   
-    - name: Update repositories cache and install nginx
+  tasks:
+
+    - name: "Download Kibana's deb"
+      get_url:
+        url: "https://artifacts.elastic.co/downloads/kibana/kibana-{{ elk_stack_version }}-amd64.deb"
+        dest: "/tmp/kibana-{{ elk_stack_version }}-amd64.deb"
+      register: download_kibana_deb
+      until: download_kibana_deb is succeeded
+  
+    - name: Install Kibana - apt
       become: true
       apt:
-        name: nginx
-        update_cache: yes  
-      tags: kibana
-           
-    - name: Upload Kibana tar.gz  
-      get_url:
-        url: "https://artifacts.elastic.co/downloads/kibana/kibana-{{ kibana_version }}-linux-x86_64.tar.gz"
-        dest: "/tmp/kibana-{{ kibana_version }}-linux-x86_64.tar.gz"
-        mode: 0755
-        timeout: 60
-        force: true
-        validate_certs: false
-      register: get_kibana
-      until: get_kibana is succeeded
-      tags: kibana
-      
-    - name: Create directrory for Kibana
-      file:
-        state: directory
-        path: "{{ kibana_home }}"
-      tags: kibana
-      
-    - name: Extract Kibana in the installation directory
+        deb: "/tmp/kibana-{{ elk_stack_version }}-amd64.deb"
+        state: present
+
+    - name: add user for Kibana
+      user:
+        name: kibana
+        shell: /bin/bash
+
+    - name: chown work directory
       become: true
-      unarchive:
-        copy: false
-        src: "/tmp/kibana-{{ kibana_version }}-linux-x86_64.tar.gz"
-        dest: "{{ kibana_home }}"
-        extra_opts: [--strip-components=1]
-        creates: "{{ kibana_home }}/bin/kibana"
-      tags:
-        - kibana
-        
-    - name: Export kibana config
+      file:
+        path: /usr/share/kibana
+        owner: kibana
+        group: kibana
+
+    - name: Configure Kibana
+      become: true
       template:
-        src: kibana.yml.j2
-        dest: "{{ kibana_home }}/config/kibana.yml"
-      tags: kibana
+        src: kibana-config.yml.j2
+        dest: /etc/kibana/kibana.yml
+
+    - name: create log file
+      become: true
+      command: touch kibana.log
+      args:      
+        chdir: /var/log
+
+    - name: chown log file
+      file:
+        owner: kibana
+        group: kibana
+        path: /var/log/kibana.log
+
+    - name: Start Kibana in Docker
+      become: true
+      become_user: kibana
+      shell: "(/usr/share/kibana/bin/kibana -c /etc/kibana/kibana.yml >/dev/null 2>&1 &)" 
+      async: 10
+      poll: 0
+      changed_when: false

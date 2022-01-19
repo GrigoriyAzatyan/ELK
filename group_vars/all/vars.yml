@@ -1,4 +1,6 @@
 ---
+elk_stack_version: "7.14.0"
+elastic_home: "/opt/elastic/{{ elk_stack_version }}"
+kibana_home: "/opt/kibana/{{ elk_stack_version }}"
+java_distr_url: "http://62.84.124.94/jdk/jdk-11.0.13_linux-x64_bin.tar.gz"
 java_jdk_version: 11.0.13
-java_oracle_jdk_package: jdk-11.0.13_linux-x64_bin.tar.gz
-kibana_version: 7.15.2
