@@ -2,10 +2,6 @@
 - name: Install Java
   hosts: all
   tasks:
-    - name: Print all available facts
-      ansible.builtin.debug:
-        var: ansible_facts
-
     - name: Set facts for Java 11 vars
       set_fact:
         java_home: "/opt/jdk/{{ java_jdk_version }}"
